@@ -1,0 +1,107 @@
+start_time <- Sys.time()
+## --------------
+# Loading required packages
+library(rvest)
+library(readr)
+library(tidyverse)
+library(PostcodesioR)
+#reading in the html page for UK imports 
+##------------------------
+link_list <- list()
+frontpage <- read_html("https://www.uktradeinfo.com/search/traders/?q=9018+&t=Traders%3a%3acommodity-code&traders=All&year=2020&trader_name=&postcode=&county=&display=table")
+# creating a list of all links in the html page
+link_list <- frontpage %>% html_nodes("a") %>% html_attr('href') 
+#finding only links that are related to a company page in the tables
+link_list <- link_list[grepl(link_list,pattern = "/traders/")]
+link_list <- link_list[-1]
+link_list <- link_list[1:50]
+## loop to open all 191 pages and repeat process 
+for (i in 2:191){
+  link <- 'https://www.uktradeinfo.com/search/traders/?q=9018+&t=Traders%3a%3acommodity-code&traders=All&year=2020&trader_name=&postcode=&county=&display=table&p='
+  page_num <- i
+  link_page <- paste(link,page_num,sep = '')
+  page_i <- read_html(link_page)
+  tmp_list <- page_i %>% html_nodes("a") %>% html_attr('href')
+  tmp_list <- tmp_list[grepl(tmp_list,pattern = "/traders/")]
+  tmp_list <- tmp_list[-1]
+  tmp_list <- if (i == 191){tmp_list[1:6]} else {tmp_list[1:50]} 
+  link_list <- append(link_list,tmp_list)
+}
+# Creating a data frame capable of holding the outputs from the for loop where data is downloaded
+# creating a for loop to extract trader names, addresses and comodities imported
+##----------------
+output <- NULL
+## Setting up the table with the first entries
+trader_page <- read_html(paste0("https://www.uktradeinfo.com/",link_list[1]))
+trader_name <- trader_page %>% html_nodes(".govuk-heading-xl")%>%
+  html_text()
+trader_address <- trader_page %>% html_nodes(".govuk-body")%>%
+  html_text()
+trader_address <- trader_address[2] %>% gsub(pattern = "\n", replacement = ",")
+csv_export <- trader_page %>% html_nodes("a") %>% html_attr('href') 
+csv_export <- csv_export[grepl(csv_export,pattern = "/umbraco/")]
+csv_export <- paste0("https://www.uktradeinfo.com/",csv_export)
+download.file(csv_export,'tmp.csv')
+tmp <- read_csv("tmp.csv")
+tmp <- tmp %>% 
+  mutate(trader_address = paste(trader_address), trader_name = paste(trader_name))
+output <- bind_rows(tmp)
+## for loop for extra iterations
+#--------------------
+for (i in 2:length(link_list)){
+  tryCatch(
+            trader_page <- read_html(paste0("https://www.uktradeinfo.com/",link_list[i])),
+            trader_name <- trader_page %>% html_nodes(".govuk-heading-xl")%>%
+              html_text(),
+            trader_address <- trader_page %>% html_nodes(".govuk-body")%>%
+              html_text(),
+            trader_address <- trader_address[2] %>% gsub(pattern = "\n", replacement = ","),
+            csv_export <- trader_page %>% html_nodes("a") %>% html_attr('href') ,
+            csv_export <- csv_export[grepl(csv_export,pattern = "/umbraco/")],
+            csv_export <- paste0("https://www.uktradeinfo.com/",csv_export),
+            download.file(csv_export,'tmp.csv'),
+            tmp <- read_csv("tmp.csv", col_types = cols(Commodity_Cn8Code = col_double(), 
+                                                        Commodity_Hs2Code = col_double(), Commodity_Hs4Code = col_double(), 
+                                                        Commodity_Hs6Code = col_double())),
+            tmp <- tmp %>% 
+              mutate(trader_address = paste(trader_address), trader_name = paste(trader_name)),
+            output <- bind_rows(output,tmp),
+            percent <- i/length(link_list),
+            print(percent) ,
+            error = function(e) {
+              message(paste("Scrape failed for page", trader_name))
+            }
+         )
+}
+# for aiding the visulaisations extracting the postcodes for traders using regex
+## using geocoding of the lat-long to ensure postcodes can be used as geo objects
+#-----------------
+output <- output %>%
+  mutate(Trader_Postcode = str_extract(pattern = '(?:[A-Z][A-HJ-Y]?[0-9][0-9A-Z]? ?[0-9][A-Z]{2}|GIR ?0A{2})',string = trader_address),
+         Trader_Lat = '',
+         Trader_Long = ''
+         )
+
+end_time <- Sys.time()
+
+end_time - start_time
+## for loop to pull the lat/long for the traders due to the restrictions of the lat/long look up
+# package restraints (API limited to 100 postcodes only)
+# for efficency make a temp table of unique post codes to find unique values only once rather 
+# than 1000 of calls per trader in the API
+tmp_table <- (output %>% group_by(trader_name,Trader_Postcode,Trader_Lat,Trader_Long) %>%
+  summarise(n = n()))
+for (i in 1:as.numeric(count(output))){
+  tmp_table$Trader_Lat[i] <- as.numeric(postcode_lookup((tmp_table$Trader_Postcode)[i])[8])
+  tmp_table$Trader_Long[i] <- as.numeric(postcode_lookup((tmp_table$Trader_Postcode)[i])[7])
+}
+## Binding together the postcodes to the Lat/Long from the API call 
+output <- output %>%
+  left_join(tmp_table, by = c("trader_name", "Trader_Postcode"))%>%
+  select(-Trader_Lat.x,-Trader_Long.x)%>%
+  rename(Trader_Lat = Trader_Lat.y,Trader_Long = Trader_Long.y)
+
+
+write.csv(output,'output.csv')
+
+
