@@ -1,3 +1,5 @@
+## WARNING
+## this script takes ~ 2 hours to run on a high end laptop with a stable internet connection.
 start_time <- Sys.time()
 ## --------------
 # Loading required packages
@@ -27,6 +29,7 @@ for (i in 2:191){
   tmp_list <- if (i == 191){tmp_list[1:6]} else {tmp_list[1:50]} 
   link_list <- append(link_list,tmp_list)
 }
+link_list <- unique(link_list)
 # Creating a data frame capable of holding the outputs from the for loop where data is downloaded
 # creating a for loop to extract trader names, addresses and comodities imported
 ##----------------
@@ -100,8 +103,28 @@ output <- output %>%
   left_join(tmp_table, by = c("trader_name", "Trader_Postcode"))%>%
   select(-Trader_Lat.x,-Trader_Long.x)%>%
   rename(Trader_Lat = Trader_Lat.y,Trader_Long = Trader_Long.y)
-
-
-write.csv(output,'output.csv')
-
-
+## aggregating the dataset - full data set is a 1.6GB text document with 1.9 million rows and 21 columns (~40 million data-points)
+## in full there was 5471 csv's downloaded and merged together
+## aggregations are added for usability and to aide in visualisation
+bind <- output %>%
+  group_by(trader_name)%>%
+  filter(Date_Year == '2020',Commodity_Hs4Code == '9018')%>%
+  summarise(Events = n(),
+            Imports = sum(TradeType_TradeTypeDescription == 'Import'),
+            Exports = sum(TradeType_TradeTypeDescription == 'Export'),
+            Months = n_distinct(Date_MonthName),
+            Sub_Codes_1_Level = n_distinct(Commodity_Hs6Code),
+            Sub_codes_2_Level = n_distinct(Commodity_Cn8Code))%>%
+  arrange(-Events)
+## creating a temporary table to bind the relevant information into the output tables
+tmp_2 <- output %>%
+  select(Trader_Postcode,Trader_Long,Trader_Lat,trader_name,trader_address)
+## creating the finalised output table
+output_2 <- bind %>%
+  left_join(tmp_2)%>%
+  filter (! duplicated(trader_name))%>%
+  filter(!is.na(Trader_Long))
+## creating the output csv for use with tableau
+write.csv(output_2,'output.csv')
+## un-aggregated raw data for use if require
+write.csv(output,"full_output.csv")
